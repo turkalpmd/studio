@@ -1,9 +1,10 @@
+
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { AlertCircle, CheckCircle, Zap, Repeat, Info } from 'lucide-react';
+import { AlertCircle, CheckCircle, Zap, Info } from 'lucide-react';
 import MetronomeControls from './metronome-controls';
 import VisualPacer from './visual-pacer';
 import { getCompressionFeedback } from '@/ai/flows/compression-feedback';
@@ -20,7 +21,7 @@ const CPRSimulator: React.FC = () => {
   const [isSessionActive, setIsSessionActive] = useState(false);
   const [compressionTimestamps, setCompressionTimestamps] = useState<number[]>([]);
   const [currentCPM, setCurrentCPM] = useState(0);
-  const [aiFeedback, setAiFeedback] = useState<string>("Start compressions to get feedback.");
+  const [aiFeedback, setAiFeedback] = useState<string>("Start a session to get feedback.");
   const [isLoadingAiFeedback, setIsLoadingAiFeedback] = useState(false);
   const [feedbackType, setFeedbackType] = useState<'neutral' | 'good' | 'warning'>('neutral');
 
@@ -38,10 +39,9 @@ const CPRSimulator: React.FC = () => {
       return 0;
     }
     
-    // More robust calculation for varying numbers of compressions
     const durationSeconds = (now - recentCompressions[0]) / 1000;
-    if (durationSeconds < 1) { // Avoid division by zero or too short intervals
-        setCurrentCPM(0); // Or based on a single click if desired
+    if (durationSeconds < 1) { 
+        setCurrentCPM(0);
         return 0;
     }
 
@@ -51,14 +51,11 @@ const CPRSimulator: React.FC = () => {
   }, [compressionTimestamps]);
 
   const fetchAiFeedback = useCallback(async (cpm: number) => {
-    if (cpm === 0 && compressionTimestamps.length > 0) { // if cpm is 0 but there were recent presses, it might be too slow
-        // this case is handled by the cpm logic itself, let's pass 0 if it's truly 0.
-    } else if (cpm === 0 && compressionTimestamps.length === 0) {
-        setAiFeedback("Start compressions to get feedback.");
+    if (cpm === 0 && compressionTimestamps.length === 0) {
+        setAiFeedback(isSessionActive ? "Awaiting compressions..." : "Start a session to get feedback.");
         setFeedbackType('neutral');
         return;
     }
-
 
     setIsLoadingAiFeedback(true);
     try {
@@ -83,13 +80,16 @@ const CPRSimulator: React.FC = () => {
     } finally {
       setIsLoadingAiFeedback(false);
     }
-  }, [toast, compressionTimestamps.length]); // Add compressionTimestamps.length to re-evaluate initial message
+  }, [toast, isSessionActive, compressionTimestamps.length]);
 
   useEffect(() => {
     if (!isSessionActive) {
         setCurrentCPM(0);
-        setAiFeedback("Start a session and begin compressions.");
+        setAiFeedback("Start a session and activate metronome.");
         setFeedbackType('neutral');
+        if (aiFeedbackTimeoutRef.current) {
+          clearTimeout(aiFeedbackTimeoutRef.current);
+        }
         return;
     }
 
@@ -98,16 +98,11 @@ const CPRSimulator: React.FC = () => {
     if (aiFeedbackTimeoutRef.current) {
       clearTimeout(aiFeedbackTimeoutRef.current);
     }
-
-    // Only fetch feedback if there are compressions or if it's the start of a session with 0 cpm
-    if (compressionTimestamps.length > 0 || cpm === 0 ) {
-        aiFeedbackTimeoutRef.current = setTimeout(() => {
-            fetchAiFeedback(cpm);
-        }, AI_FEEDBACK_DEBOUNCE_MS);
-    } else {
-        setAiFeedback("Start compressions to get feedback.");
-        setFeedbackType('neutral');
-    }
+    
+    // Fetch feedback if session is active, even if cpm is 0 (to get "Press faster" or similar)
+    aiFeedbackTimeoutRef.current = setTimeout(() => {
+        fetchAiFeedback(cpm);
+    }, AI_FEEDBACK_DEBOUNCE_MS);
     
     return () => {
       if (aiFeedbackTimeoutRef.current) {
@@ -116,16 +111,18 @@ const CPRSimulator: React.FC = () => {
     };
   }, [compressionTimestamps, isSessionActive, calculateCPM, fetchAiFeedback]);
 
-  const handleCompression = () => {
+  // This function would be called by an external system (e.g., accelerometer data processing)
+  // to register a compression event.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const handleCompression = useCallback(() => {
     if (!isSessionActive) return;
     
     const now = Date.now();
-    // Keep timestamps within the calculation window + a small buffer
     const windowStartTime = now - (CPM_CALCULATION_WINDOW_SECONDS + 2) * 1000; 
     
     setCompressionTimestamps(prev => [...prev.filter(ts => ts > windowStartTime), now]);
-    // CPM calculation and AI feedback will be triggered by useEffect watching compressionTimestamps
-  };
+  }, [isSessionActive]);
+
 
   const toggleSession = () => {
     setIsSessionActive(prev => {
@@ -133,7 +130,7 @@ const CPRSimulator: React.FC = () => {
       if (newSessionState) {
         setCompressionTimestamps([]);
         setCurrentCPM(0);
-        setAiFeedback("Start compressions to get feedback.");
+        setAiFeedback("Awaiting compressions...");
         setFeedbackType('neutral');
         toast({ title: "Session Started", description: `Metronome at ${METRONOME_BPM} BPM.` });
       } else {
@@ -141,17 +138,13 @@ const CPRSimulator: React.FC = () => {
         if (aiFeedbackTimeoutRef.current) {
           clearTimeout(aiFeedbackTimeoutRef.current);
         }
-        // Keep currentCPM and aiFeedback as is or reset:
-        // setCurrentCPM(0); 
-        // setAiFeedback("Session ended.");
-        // setFeedbackType('neutral');
       }
       return newSessionState;
     });
   };
   
   const getFeedbackIcon = () => {
-    if (isLoadingAiFeedback) return <Zap className="h-6 w-6 animate-pulse text-muted-foreground" />;
+    if (isLoadingAiFeedback && isSessionActive) return <Zap className="h-6 w-6 animate-pulse text-muted-foreground" />;
     switch (feedbackType) {
       case 'good': return <CheckCircle className="h-6 w-6 text-green-500" />;
       case 'warning': return <AlertCircle className="h-6 w-6 text-accent" />;
@@ -163,7 +156,7 @@ const CPRSimulator: React.FC = () => {
     <Card className="w-full max-w-lg shadow-2xl rounded-xl">
       <CardHeader className="text-center">
         <CardTitle className="text-3xl font-bold">CPR Rhythm Training</CardTitle>
-        <CardDescription>Maintain a steady compression rate of {TARGET_MIN_CPM}-{TARGET_MAX_CPM} CPM.</CardDescription>
+        <CardDescription>Maintain a steady compression rate of {TARGET_MIN_CPM}-{TARGET_MAX_CPM} CPM. Compressions will be detected automatically.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-8 p-6">
         <div className="flex flex-col items-center space-y-4">
@@ -175,20 +168,24 @@ const CPRSimulator: React.FC = () => {
               isSessionActive ? "bg-destructive hover:bg-destructive/90" : "bg-primary hover:bg-primary/90"
             )}
           >
-            {isSessionActive ? 'Stop Session' : 'Start Session'}
+            {isSessionActive ? 'Stop Session' : 'Start Session & Metronome'}
           </Button>
           <MetronomeControls bpm={METRONOME_BPM} isPlaying={isSessionActive} onTogglePlay={toggleSession} />
         </div>
+        
+        {isSessionActive && (
+          <div className="text-center p-4 my-8 border border-dashed border-primary/50 rounded-lg bg-primary/5">
+            <p className="text-muted-foreground">Listening for compressions...</p>
+            <p className="text-xs text-muted-foreground">Automatic detection active.</p>
+          </div>
+        )}
+        
+        {!isSessionActive && (
+           <div className="text-center p-4 my-8 border border-dashed border-muted/30 rounded-lg bg-muted/10">
+            <p className="text-muted-foreground">Start a session to begin.</p>
+          </div>
+        )}
 
-        <Button
-          onClick={handleCompression}
-          disabled={!isSessionActive}
-          className="w-full h-48 text-2xl font-bold rounded-lg shadow-lg bg-primary/10 text-primary border-2 border-primary hover:bg-primary/20 active:bg-primary/30 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed flex flex-col items-center justify-center"
-          aria-label="Simulate Chest Compression"
-        >
-          <Repeat className="h-12 w-12 mb-2"/>
-          Press for Compression
-        </Button>
 
         <VisualPacer 
           currentRate={currentCPM} 
@@ -205,7 +202,7 @@ const CPRSimulator: React.FC = () => {
             {getFeedbackIcon()}
             <CardTitle className={cn("text-xl",
                 feedbackType === 'good' ? 'text-green-700' : 
-                feedbackType === 'warning' ? 'text-accent-foreground' : // Assuming accent-foreground defined in theme
+                feedbackType === 'warning' ? 'text-accent-foreground' : 
                 'text-primary'
             )}>AI Coach</CardTitle>
           </CardHeader>
@@ -215,7 +212,7 @@ const CPRSimulator: React.FC = () => {
                 feedbackType === 'warning' ? 'text-accent-foreground' :
                 'text-foreground'
             )}>
-              {isLoadingAiFeedback && compressionTimestamps.length > 0 ? "Analyzing..." : aiFeedback}
+              {isLoadingAiFeedback && isSessionActive && compressionTimestamps.length > 0 ? "Analyzing..." : aiFeedback}
             </p>
           </CardContent>
         </Card>
