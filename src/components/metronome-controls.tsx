@@ -1,3 +1,4 @@
+
 "use client";
 
 import type { FC } from 'react';
@@ -13,7 +14,7 @@ interface MetronomeControlsProps {
 }
 
 const MetronomeControls: FC<MetronomeControlsProps> = ({ bpm, isPlaying, onTogglePlay }) => {
-  const synthRef = useRef<Tone.MembraneSynth | null>(null);
+  const synthRef = useRef<Tone.Synth | null>(null); // Changed from MembraneSynth to Synth
   const loopRef = useRef<Tone.Loop | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isAudioReady, setIsAudioReady] = useState(false);
@@ -21,15 +22,15 @@ const MetronomeControls: FC<MetronomeControlsProps> = ({ bpm, isPlaying, onToggl
 
   useEffect(() => {
     // Initialize synth on component mount
-    synthRef.current = new Tone.MembraneSynth({
-      pitchDecay: 0.01,
-      octaves: 6,
+    synthRef.current = new Tone.Synth({ // Changed from MembraneSynth
+      oscillator: {
+        type: 'triangle', // Using triangle for a clearer, less bassy tone
+      },
       envelope: {
-        attack: 0.001,
-        decay: 0.2,
-        sustain: 0.01,
-        release: 0.1,
-        attackCurve: "exponential",
+        attack: 0.005, // Quick attack
+        decay: 0.05,  // Short decay for a "tick" sound
+        sustain: 0,   // No sustain
+        release: 0.1, // Short release
       },
     }).toDestination();
     
@@ -52,7 +53,8 @@ const MetronomeControls: FC<MetronomeControlsProps> = ({ bpm, isPlaying, onToggl
     }
 
     loopRef.current = new Tone.Loop((time) => {
-      synthRef.current?.triggerAttackRelease('C2', '8n', time);
+      // Using 'C5' for a higher pitch, '16n' for a short, distinct tick
+      synthRef.current?.triggerAttackRelease('C5', '16n', time); 
     }, '4n').start(0);
 
     if (isPlaying && isAudioReady) {
