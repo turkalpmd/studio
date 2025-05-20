@@ -17,44 +17,36 @@ const VisualPacer: FC<VisualPacerProps> = ({
   maxDisplayRate = 150, // Max rate for the progress bar scale
 }) => {
   const progressValue = Math.min((currentRate / maxDisplayRate) * 100, 100);
-  // Ensure a minimum visible progress if rate is very low but not zero
   const displayProgressValue = currentRate > 0 && progressValue < 2 ? 2 : progressValue;
 
   const lowerIdealBound = metronomeBpm * 0.9;
   const upperIdealBound = metronomeBpm * 1.1;
+  const lowerWarnBound = metronomeBpm * 0.8;
+  const upperWarnBound = metronomeBpm * 1.2;
 
-  const lowerWarnBound = metronomeBpm * 0.8; // 20% deviation (outside 10% but within 20%)
-  const upperWarnBound = metronomeBpm * 1.2; // 20% deviation
+  let textColorClass = 'text-foreground'; // Default text color
 
-  let dynamicBgClass = 'bg-card'; // Default background
-  let textColorClass = 'text-foreground';
-
-  if (currentRate > 0) { // Only apply dynamic colors if compressions are happening
+  if (currentRate > 0) {
     if (currentRate >= lowerIdealBound && currentRate <= upperIdealBound) {
-      dynamicBgClass = 'bg-green-500/20'; // Good zone
-      textColorClass = 'text-green-700 dark:text-green-400';
-    } else if (currentRate >= lowerWarnBound && currentRate < lowerIdealBound || currentRate > upperIdealBound && currentRate <= upperWarnBound) {
-      dynamicBgClass = 'bg-accent/20'; // Warning zone (using accent color - orange)
-      textColorClass = 'text-accent-foreground dark:text-accent'; // Needs good contrast with accent
+      textColorClass = 'text-green-700 dark:text-green-300'; // Good zone text
+    } else if ((currentRate >= lowerWarnBound && currentRate < lowerIdealBound) || (currentRate > upperIdealBound && currentRate <= upperWarnBound)) {
+      textColorClass = 'text-yellow-700 dark:text-yellow-400'; // Warning zone text (using a generic yellow)
     } else {
-      dynamicBgClass = 'bg-destructive/20'; // Bad zone (too far off)
-      textColorClass = 'text-destructive-foreground dark:text-destructive';
+      textColorClass = 'text-red-700 dark:text-red-400'; // Bad zone text (using a generic red)
     }
   }
 
+
   return (
     <div className={cn(
-        "w-full space-y-3 p-4 rounded-lg shadow-inner transition-colors duration-300",
-        dynamicBgClass
+        "w-full space-y-3 p-4 rounded-lg shadow-inner bg-card/90 backdrop-blur-sm transition-colors duration-300"
       )}
     >
       <div className="relative h-6 rounded-full bg-secondary/60 dark:bg-secondary/40 overflow-hidden border border-muted">
-        {/* Progress bar showing current CPM */}
         <div
           className="absolute top-0 left-0 h-full bg-primary transition-[width] duration-300 ease-out"
           style={{ width: `${displayProgressValue}%` }}
         />
-        {/* Target range indicator based on metronomeBpm +/- 10% */}
         <div
           className="absolute top-0 h-full border-x-2 border-foreground/40 opacity-75"
           style={{
@@ -71,7 +63,7 @@ const VisualPacer: FC<VisualPacerProps> = ({
         </span>
         <span>{maxDisplayRate}</span>
       </div>
-      <p className={cn("text-center text-sm", textColorClass)}>
+      <p className={cn("text-center text-sm font-semibold", textColorClass)}>
         Metronome: {metronomeBpm} BPM
       </p>
       <p className={cn("text-center text-xs text-muted-foreground/80", textColorClass)}>

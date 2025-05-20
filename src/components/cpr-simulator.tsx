@@ -16,10 +16,14 @@ const MIN_BPM = 60;
 const MAX_BPM = 150;
 const DEFAULT_BPM = 100;
 const CPM_CALCULATION_WINDOW_SECONDS = 10;
-const MOTION_EVENT_DEBOUNCE_MS = 250; 
-const ACCELERATION_THRESHOLD = 18; 
+const MOTION_EVENT_DEBOUNCE_MS = 250;
+const ACCELERATION_THRESHOLD = 18;
 
-const CPRSimulator: React.FC = () => {
+interface CPRSimulatorProps {
+  onPerformanceChange: (bgClass: string) => void;
+}
+
+const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
   const [isSessionActive, setIsSessionActive] = useState(false);
   const [compressionTimestamps, setCompressionTimestamps] = useState<number[]>([]);
   const [currentCPM, setCurrentCPM] = useState(0);
@@ -29,13 +33,16 @@ const CPRSimulator: React.FC = () => {
   const lastMotionCompressionTimeRef = useRef<number>(0);
   const { toast } = useToast();
 
+  const defaultBackground = "bg-gradient-to-br from-background to-secondary/30";
+
   const handleCompression = useCallback(() => {
     if (!isSessionActive) return;
     
     const now = Date.now();
-    const windowStartTime = now - (CPM_CALCULATION_WINDOW_SECONDS + 5) * 1000; 
+    // Keep a slightly larger window for calculation to avoid edge cases, calculation itself uses strict window.
+    const retentionWindowStartTime = now - (CPM_CALCULATION_WINDOW_SECONDS + 5) * 1000; 
     
-    setCompressionTimestamps(prev => [...prev.filter(ts => ts > windowStartTime), now]);
+    setCompressionTimestamps(prev => [...prev.filter(ts => ts > retentionWindowStartTime), now]);
   }, [isSessionActive]);
 
   const calculateCPM = useCallback(() => {
@@ -44,7 +51,7 @@ const CPRSimulator: React.FC = () => {
     
     const recentCompressions = compressionTimestamps.filter(ts => ts > windowStartTime);
     
-    if (recentCompressions.length < 2) {
+    if (recentCompressions.length < 1) { // Allow 0 CPM if no compressions
       setCurrentCPM(0);
       return 0;
     }
@@ -56,14 +63,40 @@ const CPRSimulator: React.FC = () => {
 
   useEffect(() => {
     if (!isSessionActive) {
-        setCurrentCPM(0);
-        setMotionStatus("Motion detection inactive.");
-        return;
+      setCurrentCPM(0);
+      setMotionStatus("Motion detection inactive.");
+      onPerformanceChange(defaultBackground); // Reset background when session stops
+      return;
     }
-    // Calculate CPM whenever compressionTimestamps changes during an active session
+    
     calculateCPM();
     
-  }, [compressionTimestamps, isSessionActive, calculateCPM]);
+  }, [compressionTimestamps, isSessionActive, calculateCPM, onPerformanceChange, defaultBackground]);
+
+  // Effect for updating page background based on performance
+  useEffect(() => {
+    if (!isSessionActive || currentCPM === 0) {
+      onPerformanceChange(defaultBackground);
+      return;
+    }
+
+    const lowerIdealBound = metronomeBpm * 0.9;
+    const upperIdealBound = metronomeBpm * 1.1;
+    const lowerWarnBound = metronomeBpm * 0.8;
+    const upperWarnBound = metronomeBpm * 1.2;
+
+    let bgClass = defaultBackground;
+
+    if (currentCPM >= lowerIdealBound && currentCPM <= upperIdealBound) {
+      bgClass = 'bg-green-300/50 dark:bg-green-700/40'; // Good
+    } else if ((currentCPM >= lowerWarnBound && currentCPM < lowerIdealBound) || (currentCPM > upperIdealBound && currentCPM <= upperWarnBound)) {
+      bgClass = 'bg-yellow-300/50 dark:bg-yellow-600/40'; // Warn
+    } else {
+      bgClass = 'bg-red-400/50 dark:bg-red-800/40'; // Bad
+    }
+    onPerformanceChange(bgClass);
+
+  }, [currentCPM, metronomeBpm, isSessionActive, onPerformanceChange, defaultBackground]);
 
 
   // Motion detection effect
@@ -130,8 +163,10 @@ const CPRSimulator: React.FC = () => {
         setCompressionTimestamps([]);
         setCurrentCPM(0);
         lastMotionCompressionTimeRef.current = 0; 
+        onPerformanceChange(defaultBackground); // Set to default when session starts before any CPM
         toast({ title: "Session Started", description: `Metronome at ${metronomeBpm} BPM.` });
       } else {
+        onPerformanceChange(defaultBackground); // Reset background when session explicitly stops
         toast({ title: "Session Ended" });
       }
       return newSessionState;
@@ -143,10 +178,10 @@ const CPRSimulator: React.FC = () => {
   };
 
   return (
-    <Card className="w-full max-w-lg shadow-2xl rounded-xl">
+    <Card className="w-full max-w-lg shadow-2xl rounded-xl bg-card/80 backdrop-blur-sm">
       <CardHeader className="text-center">
         <CardTitle className="text-3xl font-bold">CPR Rhythm Training</CardTitle>
-        <CardDescription>Adjust the metronome speed and try to match its pace. Compressions are detected by phone movement.</CardDescription>
+        <CardDescription>Adjust metronome speed. Match the pace. Compressions detected by phone movement.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6 p-6">
         <div className="flex flex-col items-center space-y-4">
@@ -163,7 +198,7 @@ const CPRSimulator: React.FC = () => {
           <MetronomeControls bpm={metronomeBpm} isPlaying={isSessionActive} onTogglePlay={toggleSession} />
         </div>
 
-        <div className="space-y-3 pt-4 border-t border-border">
+        <div className="space-y-3 pt-4 border-t border-border/50">
             <div className="flex justify-between items-center">
                 <Label htmlFor="bpm-slider" className="flex items-center text-muted-foreground">
                     <Music2 className="h-5 w-5 mr-2 text-primary"/> Metronome Speed:
@@ -184,14 +219,14 @@ const CPRSimulator: React.FC = () => {
         
         <div className={cn(
             "text-center p-3 my-2 border border-dashed rounded-lg",
-            motionStatus.includes("active") ? "border-green-500/50 bg-green-500/5" :
-            motionStatus.includes("Error") || motionStatus.includes("denied") || motionStatus.includes("not supported") ? "border-destructive/50 bg-destructive/5" :
-            "border-primary/50 bg-primary/5"
+            motionStatus.includes("active") ? "border-green-500/70 bg-green-500/10" :
+            motionStatus.includes("Error") || motionStatus.includes("denied") || motionStatus.includes("not supported") ? "border-destructive/70 bg-destructive/10" :
+            "border-primary/70 bg-primary/10"
           )}>
             <p className={cn(
                 "text-sm flex items-center justify-center",
-                 motionStatus.includes("active") ? "text-green-700" :
-                 motionStatus.includes("Error") || motionStatus.includes("denied") || motionStatus.includes("not supported") ? "text-destructive-foreground" :
+                 motionStatus.includes("active") ? "text-green-700 dark:text-green-400" :
+                 motionStatus.includes("Error") || motionStatus.includes("denied") || motionStatus.includes("not supported") ? "text-destructive dark:text-destructive-foreground" :
                  "text-primary"
             )}>
                 <SmartphoneNfc className="h-4 w-4 mr-2"/> {motionStatus}
@@ -200,7 +235,7 @@ const CPRSimulator: React.FC = () => {
                 <p className="text-xs text-muted-foreground mt-1">If prompted, please allow motion sensor access.</p>
             )}
              {isSessionActive && motionStatus.includes("active") && (
-                <p className="text-xs text-muted-foreground mt-1">Try to keep phone relatively flat on chest for best results (Y-axis detection).</p>
+                <p className="text-xs text-muted-foreground mt-1">Place phone flat on chest for best results (Y-axis detection).</p>
             )}
         </div>
         
