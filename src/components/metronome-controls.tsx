@@ -14,23 +14,22 @@ interface MetronomeControlsProps {
 }
 
 const MetronomeControls: FC<MetronomeControlsProps> = ({ bpm, isPlaying, onTogglePlay }) => {
-  const synthRef = useRef<Tone.Synth | null>(null); // Changed from MembraneSynth to Synth
+  const synthRef = useRef<Tone.Synth | null>(null);
   const loopRef = useRef<Tone.Loop | null>(null);
   const [isMuted, setIsMuted] = useState(false);
-  const [isAudioReady, setIsAudioReady] = useState(false);
-
+  const [isAudioReady, setIsAudioReady] = useState(false); // Tracks if Tone.start() has been called
 
   useEffect(() => {
     // Initialize synth on component mount
-    synthRef.current = new Tone.Synth({ // Changed from MembraneSynth
+    synthRef.current = new Tone.Synth({
       oscillator: {
-        type: 'triangle', // Using triangle for a clearer, less bassy tone
+        type: 'triangle',
       },
       envelope: {
-        attack: 0.005, // Quick attack
-        decay: 0.05,  // Short decay for a "tick" sound
-        sustain: 0,   // No sustain
-        release: 0.1, // Short release
+        attack: 0.005,
+        decay: 0.05,
+        sustain: 0,
+        release: 0.1,
       },
     }).toDestination();
     
@@ -38,56 +37,81 @@ const MetronomeControls: FC<MetronomeControlsProps> = ({ bpm, isPlaying, onToggl
       // Cleanup on component unmount
       loopRef.current?.dispose();
       synthRef.current?.dispose();
-      Tone.Transport.stop();
-      Tone.Transport.cancel();
+      // If Transport was started, pause it. Avoid broad stop/cancel for global Tone.Transport.
+      if (Tone.Transport.state === "started") {
+        Tone.Transport.pause();
+      }
     };
   }, []);
 
+  // Effect to manage BPM, loop, and transport state
   useEffect(() => {
-    if (!synthRef.current) return;
+    if (!synthRef.current || !isAudioReady) {
+      // Don't proceed with Tone.js operations if synth isn't ready or audio context hasn't started
+      return;
+    }
 
     Tone.Transport.bpm.value = bpm;
 
+    // Re-create loop if it doesn't exist or if BPM might have changed its fundamental timing
+    // (though for '4n' this is less critical than if interval was directly derived from bpm)
     if (loopRef.current) {
-      loopRef.current.dispose(); // Dispose old loop if bpm changes
+      loopRef.current.dispose();
     }
-
     loopRef.current = new Tone.Loop((time) => {
-      // Using 'C5' for a higher pitch, '16n' for a short, distinct tick
       synthRef.current?.triggerAttackRelease('C5', '16n', time); 
-    }, '4n').start(0);
-
-    if (isPlaying && isAudioReady) {
-      Tone.Transport.start();
-    } else {
-      Tone.Transport.pause(); // Use pause instead of stop to maintain position
-    }
-  }, [bpm, isAudioReady]); // Re-create loop if bpm changes or audio becomes ready
-
-  useEffect(() => {
-     if (!isAudioReady) return;
+    }, '4n').start(0); // .start(0) schedules it to start with Tone.Transport
 
     if (isPlaying) {
+      if (Tone.Transport.state !== 'started') {
         Tone.Transport.start();
+      }
     } else {
+      if (Tone.Transport.state === 'started') {
         Tone.Transport.pause();
+      }
     }
-  }, [isPlaying, isAudioReady]);
+  }, [bpm, isPlaying, isAudioReady]); // Re-run if these critical states change
 
+  // Effect to attempt starting AudioContext when parent signals to play (isPlaying becomes true)
+  useEffect(() => {
+    const attemptAudioStartOnPlay = async () => {
+      if (isPlaying && !isAudioReady && typeof window !== 'undefined') {
+        try {
+          await Tone.start();
+          setIsAudioReady(true);
+          console.log("Audio Context started: Media playback allowed.");
+        } catch (error) {
+          console.error("Error starting Audio Context on play: ", error);
+          // Optionally, inform user via toast that interaction with metronome button might be needed
+        }
+      }
+    };
+    attemptAudioStartOnPlay();
+  }, [isPlaying, isAudioReady]); // Run when isPlaying or isAudioReady changes
 
+  // Handle Mute
   useEffect(() => {
     if (synthRef.current) {
       synthRef.current.volume.value = isMuted ? -Infinity : 0;
     }
   }, [isMuted]);
 
+  // Handler for this component's own Play/Pause button
   const handleTogglePlayInternal = async () => {
-    if (!isAudioReady) {
-      await Tone.start();
-      setIsAudioReady(true);
-      console.log("Audio Context started by user interaction.");
+    if (!isAudioReady && typeof window !== 'undefined') {
+      try {
+        await Tone.start();
+        setIsAudioReady(true);
+        console.log("Audio Context started by metronome button interaction.");
+      } catch (e) {
+        console.error("Error starting Audio Context via button:", e);
+        // If Tone.start() fails, we might not want to call onTogglePlay,
+        // or we could call it and hope the main effect handles it.
+        // For now, we'll still call onTogglePlay.
+      }
     }
-    onTogglePlay();
+    onTogglePlay(); // Propagate to parent (CPRSimulator to toggle session)
   };
   
   const handleToggleMute = () => {
