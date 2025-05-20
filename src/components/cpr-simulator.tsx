@@ -4,7 +4,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { AlertCircle, CheckCircle, Zap, Info, Music2 } from 'lucide-react';
+import { AlertCircle, CheckCircle, Zap, Info, Music2, SmartphoneNfc } from 'lucide-react';
 import MetronomeControls from './metronome-controls';
 import VisualPacer from './visual-pacer';
 import { getCompressionFeedback } from '@/ai/flows/compression-feedback';
@@ -18,8 +18,10 @@ const TARGET_MAX_CPM = 120;
 const MIN_BPM = 60;
 const MAX_BPM = 150;
 const DEFAULT_BPM = 100;
-const CPM_CALCULATION_WINDOW_SECONDS = 10; // Calculate CPM over the last 10 seconds
-const AI_FEEDBACK_DEBOUNCE_MS = 1500; // Call AI at most every 1.5 seconds
+const CPM_CALCULATION_WINDOW_SECONDS = 10;
+const AI_FEEDBACK_DEBOUNCE_MS = 1500;
+const MOTION_EVENT_DEBOUNCE_MS = 250; // Min time between motion-detected compressions (limits to 240 CPM max theoretical from motion)
+const ACCELERATION_THRESHOLD = 18; // m/s^2 - Gravity is ~9.8. This threshold tries to catch sharp movements.
 
 const CPRSimulator: React.FC = () => {
   const [isSessionActive, setIsSessionActive] = useState(false);
@@ -29,9 +31,22 @@ const CPRSimulator: React.FC = () => {
   const [isLoadingAiFeedback, setIsLoadingAiFeedback] = useState(false);
   const [feedbackType, setFeedbackType] = useState<'neutral' | 'good' | 'warning'>('neutral');
   const [metronomeBpm, setMetronomeBpm] = useState<number>(DEFAULT_BPM);
+  const [motionStatus, setMotionStatus] = useState<string>("Motion detection inactive.");
 
   const aiFeedbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastMotionCompressionTimeRef = useRef<number>(0);
   const { toast } = useToast();
+
+  const handleCompression = useCallback(() => {
+    // This function is now primarily called by motion detection
+    if (!isSessionActive) return;
+    
+    const now = Date.now();
+    // Keep a rolling window of timestamps for CPM calculation
+    const windowStartTime = now - (CPM_CALCULATION_WINDOW_SECONDS + 5) * 1000; // Keep a bit more for robustness
+    
+    setCompressionTimestamps(prev => [...prev.filter(ts => ts > windowStartTime), now]);
+  }, [isSessionActive]);
 
   const calculateCPM = useCallback(() => {
     const now = Date.now();
@@ -39,25 +54,25 @@ const CPRSimulator: React.FC = () => {
     
     const recentCompressions = compressionTimestamps.filter(ts => ts > windowStartTime);
     
-    if (recentCompressions.length === 0) {
+    if (recentCompressions.length < 2) { // Need at least 2 compressions to calculate a rate over a window
       setCurrentCPM(0);
       return 0;
     }
     
-    const durationSeconds = (now - recentCompressions[0]) / 1000;
-    if (durationSeconds < 1) { 
-        setCurrentCPM(0);
-        return 0;
-    }
-
-    const cpm = Math.round((recentCompressions.length / (CPM_CALCULATION_WINDOW_SECONDS)) * 60);
+    // Calculate CPM based on the number of compressions in the defined window
+    const cpm = Math.round((recentCompressions.length / CPM_CALCULATION_WINDOW_SECONDS) * 60);
     setCurrentCPM(cpm);
     return cpm;
   }, [compressionTimestamps]);
 
   const fetchAiFeedback = useCallback(async (cpm: number) => {
-    if (cpm === 0 && compressionTimestamps.length === 0) {
-        setAiFeedback(isSessionActive ? "Awaiting compressions..." : "Start a session to get feedback.");
+    if (!isSessionActive) {
+        setAiFeedback("Start a session to get feedback.");
+        setFeedbackType('neutral');
+        return;
+    }
+    if (cpm === 0 && compressionTimestamps.length < 2) { // Require at least 2 compressions to start feedback
+        setAiFeedback("Awaiting sufficient compressions...");
         setFeedbackType('neutral');
         return;
     }
@@ -75,7 +90,7 @@ const CPRSimulator: React.FC = () => {
       }
     } catch (error) {
       console.error("Error fetching AI feedback:", error);
-      setAiFeedback("Error fetching feedback. Please try again.");
+      setAiFeedback("Error fetching feedback.");
       setFeedbackType('warning');
       toast({
         title: "AI Feedback Error",
@@ -92,21 +107,28 @@ const CPRSimulator: React.FC = () => {
         setCurrentCPM(0);
         setAiFeedback("Start a session and activate metronome.");
         setFeedbackType('neutral');
+        setMotionStatus("Motion detection inactive.");
         if (aiFeedbackTimeoutRef.current) {
           clearTimeout(aiFeedbackTimeoutRef.current);
         }
         return;
     }
 
+    // Calculate CPM
     const cpm = calculateCPM();
 
+    // Debounce AI feedback
     if (aiFeedbackTimeoutRef.current) {
       clearTimeout(aiFeedbackTimeoutRef.current);
     }
-    
-    aiFeedbackTimeoutRef.current = setTimeout(() => {
-        fetchAiFeedback(cpm);
-    }, AI_FEEDBACK_DEBOUNCE_MS);
+    if (compressionTimestamps.length > 0) { // Only fetch AI feedback if there are compressions
+        aiFeedbackTimeoutRef.current = setTimeout(() => {
+            fetchAiFeedback(cpm);
+        }, AI_FEEDBACK_DEBOUNCE_MS);
+    } else {
+        setAiFeedback("Awaiting compressions...");
+        setFeedbackType('neutral');
+    }
     
     return () => {
       if (aiFeedbackTimeoutRef.current) {
@@ -115,15 +137,66 @@ const CPRSimulator: React.FC = () => {
     };
   }, [compressionTimestamps, isSessionActive, calculateCPM, fetchAiFeedback]);
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const handleCompression = useCallback(() => {
-    if (!isSessionActive) return;
-    
-    const now = Date.now();
-    const windowStartTime = now - (CPM_CALCULATION_WINDOW_SECONDS + 2) * 1000; 
-    
-    setCompressionTimestamps(prev => [...prev.filter(ts => ts > windowStartTime), now]);
-  }, [isSessionActive]);
+
+  // Motion detection effect
+  useEffect(() => {
+    if (!isSessionActive) {
+      setMotionStatus("Motion detection inactive.");
+      return;
+    }
+
+    const handleDeviceMotion = (event: DeviceMotionEvent) => {
+      const now = Date.now();
+      if (now - lastMotionCompressionTimeRef.current < MOTION_EVENT_DEBOUNCE_MS) {
+        return; // Debounce
+      }
+
+      const acceleration = event.accelerationIncludingGravity;
+      if (acceleration && acceleration.y) {
+        // Simple detection: significant change in Y-axis acceleration
+        // This assumes the phone is relatively flat, screen up, moving up/down.
+        // This is a VERY basic heuristic and may need significant tuning.
+        if (Math.abs(acceleration.y) > ACCELERATION_THRESHOLD) {
+          handleCompression();
+          lastMotionCompressionTimeRef.current = now;
+        }
+      }
+    };
+
+    if (typeof window.DeviceMotionEvent !== 'undefined') {
+      // @ts-ignore Non-standard permission API for iOS 13+
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        // @ts-ignore
+        DeviceMotionEvent.requestPermission()
+          .then((permissionState: string) => {
+            if (permissionState === 'granted') {
+              window.addEventListener('devicemotion', handleDeviceMotion);
+              setMotionStatus("Motion detection active.");
+            } else {
+              setMotionStatus("Permission for motion detection denied.");
+              toast({ title: "Motion Permission Denied", description: "Please enable motion sensor access in your browser settings.", variant: "destructive" });
+            }
+          })
+          .catch((error: any) => {
+             console.error("Error requesting motion permission:", error);
+             setMotionStatus("Error requesting motion permission.");
+             toast({ title: "Motion Permission Error", description: "Could not request motion sensor access.", variant: "destructive" });
+          });
+      } else {
+        // For browsers that don't require explicit permission (e.g., Android Chrome)
+        window.addEventListener('devicemotion', handleDeviceMotion);
+        setMotionStatus("Motion detection active (standard).");
+      }
+    } else {
+      setMotionStatus("Motion detection not supported on this device/browser.");
+      toast({ title: "Motion Not Supported", description: "Your device or browser does not support motion detection.", variant: "destructive" });
+    }
+
+    return () => {
+      window.removeEventListener('devicemotion', handleDeviceMotion);
+      setMotionStatus("Motion detection inactive.");
+    };
+  }, [isSessionActive, handleCompression, toast]);
 
 
   const toggleSession = () => {
@@ -134,6 +207,7 @@ const CPRSimulator: React.FC = () => {
         setCurrentCPM(0);
         setAiFeedback("Awaiting compressions...");
         setFeedbackType('neutral');
+        lastMotionCompressionTimeRef.current = 0; // Reset debounce timer for motion
         toast({ title: "Session Started", description: `Metronome at ${metronomeBpm} BPM.` });
       } else {
         toast({ title: "Session Ended" });
@@ -162,9 +236,9 @@ const CPRSimulator: React.FC = () => {
     <Card className="w-full max-w-lg shadow-2xl rounded-xl">
       <CardHeader className="text-center">
         <CardTitle className="text-3xl font-bold">CPR Rhythm Training</CardTitle>
-        <CardDescription>Maintain a steady compression rate of {TARGET_MIN_CPM}-{TARGET_MAX_CPM} CPM. Compressions will be detected automatically.</CardDescription>
+        <CardDescription>Maintain a steady compression rate of {TARGET_MIN_CPM}-{TARGET_MAX_CPM} CPM. Compressions will be detected via phone movement.</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-8 p-6">
+      <CardContent className="space-y-6 p-6">
         <div className="flex flex-col items-center space-y-4">
           <Button 
             onClick={toggleSession} 
@@ -198,19 +272,28 @@ const CPRSimulator: React.FC = () => {
             />
         </div>
         
-        {isSessionActive && (
-          <div className="text-center p-4 my-4 border border-dashed border-primary/50 rounded-lg bg-primary/5">
-            <p className="text-muted-foreground">Listening for compressions...</p>
-            <p className="text-xs text-muted-foreground">Automatic detection (via motion sensor) pending implementation.</p>
-          </div>
-        )}
+        <div className={cn(
+            "text-center p-3 my-2 border border-dashed rounded-lg",
+            motionStatus.includes("active") ? "border-green-500/50 bg-green-500/5" :
+            motionStatus.includes("Error") || motionStatus.includes("denied") || motionStatus.includes("not supported") ? "border-destructive/50 bg-destructive/5" :
+            "border-primary/50 bg-primary/5"
+          )}>
+            <p className={cn(
+                "text-sm flex items-center justify-center",
+                 motionStatus.includes("active") ? "text-green-700" :
+                 motionStatus.includes("Error") || motionStatus.includes("denied") || motionStatus.includes("not supported") ? "text-destructive-foreground" :
+                 "text-primary"
+            )}>
+                <SmartphoneNfc className="h-4 w-4 mr-2"/> {motionStatus}
+            </p>
+            {isSessionActive && !motionStatus.includes("active") && (
+                <p className="text-xs text-muted-foreground mt-1">If prompted, please allow motion sensor access.</p>
+            )}
+             {isSessionActive && motionStatus.includes("active") && (
+                <p className="text-xs text-muted-foreground mt-1">Try to keep phone relatively flat on chest for best results (Y-axis detection).</p>
+            )}
+        </div>
         
-        {!isSessionActive && (
-           <div className="text-center p-4 my-4 border border-dashed border-muted/30 rounded-lg bg-muted/10">
-            <p className="text-muted-foreground">Adjust metronome speed if needed, then start a session.</p>
-          </div>
-        )}
-
         <VisualPacer 
           currentRate={currentCPM} 
           targetMinRate={TARGET_MIN_CPM} 
@@ -243,7 +326,7 @@ const CPRSimulator: React.FC = () => {
       </CardContent>
       <CardFooter className="text-center p-4">
         <p className="text-xs text-muted-foreground">
-          This is a simulator for CPR compression rate practice. It does not measure compression depth.
+          This is a simulator for CPR compression rate practice. Motion-based compression detection is experimental.
           Always follow official CPR guidelines. Not for use in real emergencies.
         </p>
       </CardFooter>
