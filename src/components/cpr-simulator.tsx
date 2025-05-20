@@ -17,7 +17,7 @@ const MAX_BPM = 150;
 const DEFAULT_BPM = 100;
 const CPM_CALCULATION_WINDOW_SECONDS = 10;
 const MOTION_EVENT_DEBOUNCE_MS = 250;
-const ACCELERATION_THRESHOLD = 18; 
+const ACCELERATION_THRESHOLD = 12; // Lowered threshold for better sensitivity
 
 interface CPRSimulatorProps {
   onPerformanceChange: (bgClass: string) => void;
@@ -43,6 +43,7 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
     if (!isSessionActive) return;
     
     const now = Date.now();
+    // Keep timestamps for a bit longer than the calculation window to ensure smooth averaging
     const retentionWindowStartTime = now - (CPM_CALCULATION_WINDOW_SECONDS + 5) * 1000; 
     
     setCompressionTimestamps(prev => [...prev.filter(ts => ts > retentionWindowStartTime), now]);
@@ -59,37 +60,38 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
       return 0;
     }
     
+    // Calculate CPM: (compressions / window_seconds) * 60
     const cpm = Math.round((recentCompressions.length / CPM_CALCULATION_WINDOW_SECONDS) * 60);
     setCurrentCPM(cpm);
     return cpm;
-  }, [compressionTimestamps]);
+  }, [compressionTimestamps]); // Depends on compressionTimestamps to use the latest
 
   useEffect(() => {
     if (!isSessionActive) {
       setCurrentCPM(0);
-      // Don't change motion status here if stopping session, let motion effect handle it or toggleSession handle it.
-      // setMotionStatus("Motion detection inactive."); 
       onPerformanceChange(defaultBackground);
       return;
     }
     
+    // Interval to calculate CPM every second
     const cpmCalculationInterval = setInterval(calculateCPM, 1000); 
     
     return () => clearInterval(cpmCalculationInterval);
     
-  }, [isSessionActive, calculateCPM, onPerformanceChange, defaultBackground]);
+  }, [isSessionActive, calculateCPM, onPerformanceChange, defaultBackground]); // calculateCPM is stable if its own dependencies are stable or if it's memoized correctly
 
 
   useEffect(() => {
-    if (!isSessionActive || (currentCPM === 0 && compressionTimestamps.length === 0)) { // Ensure background resets correctly if cpm drops to 0 during session but then picks up
+    // If session is not active OR if CPM is 0 AND there are no compressions at all, reset background
+    if (!isSessionActive || (currentCPM === 0 && compressionTimestamps.length === 0)) {
       onPerformanceChange(defaultBackground);
       return;
     }
 
-    const lowerIdealBound = metronomeBpm * 0.9;
-    const upperIdealBound = metronomeBpm * 1.1;
-    const lowerWarnBound = metronomeBpm * 0.8; 
-    const upperWarnBound = metronomeBpm * 1.2; 
+    const lowerIdealBound = metronomeBpm * 0.9; // 90% of metronome BPM
+    const upperIdealBound = metronomeBpm * 1.1; // 110% of metronome BPM
+    const lowerWarnBound = metronomeBpm * 0.8;  // 80% of metronome BPM (lower warning threshold)
+    const upperWarnBound = metronomeBpm * 1.2;  // 120% of metronome BPM (upper warning threshold)
 
     let bgClass = defaultBackground;
 
@@ -97,8 +99,10 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
         if (currentCPM >= lowerIdealBound && currentCPM <= upperIdealBound) {
             bgClass = goodBackground;
         } else if ((currentCPM >= lowerWarnBound && currentCPM < lowerIdealBound) || (currentCPM > upperIdealBound && currentCPM <= upperWarnBound)) {
+            // Between 80-90% or 110-120%
             bgClass = warnBackground;
         } else {
+            // Below 80% or above 120%
             bgClass = badBackground;
         }
     }
@@ -111,21 +115,20 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
   useEffect(() => {
     if (!isSessionActive) {
       setMotionStatus("Motion detection inactive.");
-      // No event listeners to remove if not active, but good practice
       return () => {
-        // Ensure cleanup even if effect body wasn't fully run.
-        // This is primarily for listeners added if isSessionActive was true.
+        // Ensure cleanup of any listeners if the component unmounts or session stops
       };
     }
 
     const handleDeviceMotion = (event: DeviceMotionEvent) => {
       const now = Date.now();
       if (now - lastMotionCompressionTimeRef.current < MOTION_EVENT_DEBOUNCE_MS) {
-        return; 
+        return; // Debounce: ignore events too close to the last registered compression
       }
 
       const acceleration = event.accelerationIncludingGravity;
       if (acceleration && acceleration.y) {
+        // Check for significant change in Y-axis acceleration
         if (Math.abs(acceleration.y) > ACCELERATION_THRESHOLD) {
           handleCompression();
           lastMotionCompressionTimeRef.current = now;
@@ -136,6 +139,7 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
     let motionListenerAttached = false;
 
     if (typeof window.DeviceMotionEvent !== 'undefined') {
+      // For iOS 13+
       if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
         (DeviceMotionEvent as any).requestPermission()
           .then((permissionState: string) => {
@@ -145,7 +149,7 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
               setMotionStatus("Motion detection active.");
             } else {
               setMotionStatus("Permission for motion detection denied.");
-              setTimeout(() => {
+              setTimeout(() => { // Defer toast to avoid render-in-render warning
                 toast({ title: "Motion Permission Denied", description: "Please enable motion sensor access in your browser settings for automatic compression detection.", variant: "destructive" });
               }, 0);
             }
@@ -153,18 +157,19 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
           .catch((error: any) => {
              console.error("Error requesting motion permission:", error);
              setMotionStatus("Error requesting motion permission.");
-             setTimeout(() => {
+             setTimeout(() => { // Defer toast
                 toast({ title: "Motion Permission Error", description: "Could not request motion sensor access. Automatic compression detection may not work.", variant: "destructive" });
              }, 0);
           });
       } else {
+        // For other browsers or older iOS
         window.addEventListener('devicemotion', handleDeviceMotion);
         motionListenerAttached = true;
         setMotionStatus("Motion detection active (standard).");
       }
     } else {
       setMotionStatus("Motion detection not supported on this device/browser.");
-      setTimeout(() => {
+      setTimeout(() => { // Defer toast
         toast({ title: "Motion Not Supported", description: "Your device or browser does not support motion detection for automatic compressions.", variant: "destructive" });
       }, 0);
     }
@@ -173,6 +178,7 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
       if (motionListenerAttached) {
         window.removeEventListener('devicemotion', handleDeviceMotion);
       }
+      // setMotionStatus("Motion detection inactive."); // Set status on cleanup if session stops
     };
   }, [isSessionActive, handleCompression]); // Removed toast from dependencies
 
@@ -181,15 +187,18 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
     setIsSessionActive(prev => {
       const newSessionState = !prev;
       if (newSessionState) {
+        // Resetting for a new session
         setCompressionTimestamps([]); 
         setCurrentCPM(0); 
-        lastMotionCompressionTimeRef.current = 0; 
-        onPerformanceChange(defaultBackground); 
+        lastMotionCompressionTimeRef.current = 0; // Reset debounce timer
+        onPerformanceChange(defaultBackground); // Reset background
+        // Defer toast to avoid potential render-in-render warning
         setTimeout(() => {
           toast({ title: "Session Started", description: `Metronome at ${metronomeBpm} BPM. Try to match the rhythm.` });
         }, 0);
       } else {
-        onPerformanceChange(defaultBackground); 
+        // Ending the session
+        onPerformanceChange(defaultBackground); // Reset background
         setMotionStatus("Motion detection inactive."); // Explicitly set inactive on stop
         setTimeout(() => {
           toast({ title: "Session Ended" });
@@ -282,3 +291,4 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
 };
 
 export default CPRSimulator;
+
