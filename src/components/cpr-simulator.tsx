@@ -4,16 +4,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { AlertCircle, CheckCircle, Zap, Info } from 'lucide-react';
+import { AlertCircle, CheckCircle, Zap, Info, Music2 } from 'lucide-react';
 import MetronomeControls from './metronome-controls';
 import VisualPacer from './visual-pacer';
 import { getCompressionFeedback } from '@/ai/flows/compression-feedback';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import { Slider } from '@/components/ui/slider';
+import { Label } from '@/components/ui/label';
 
 const TARGET_MIN_CPM = 100;
 const TARGET_MAX_CPM = 120;
-const METRONOME_BPM = 100;
+const MIN_BPM = 60;
+const MAX_BPM = 150;
+const DEFAULT_BPM = 100;
 const CPM_CALCULATION_WINDOW_SECONDS = 10; // Calculate CPM over the last 10 seconds
 const AI_FEEDBACK_DEBOUNCE_MS = 1500; // Call AI at most every 1.5 seconds
 
@@ -24,6 +28,7 @@ const CPRSimulator: React.FC = () => {
   const [aiFeedback, setAiFeedback] = useState<string>("Start a session to get feedback.");
   const [isLoadingAiFeedback, setIsLoadingAiFeedback] = useState(false);
   const [feedbackType, setFeedbackType] = useState<'neutral' | 'good' | 'warning'>('neutral');
+  const [metronomeBpm, setMetronomeBpm] = useState<number>(DEFAULT_BPM);
 
   const aiFeedbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const { toast } = useToast();
@@ -99,7 +104,6 @@ const CPRSimulator: React.FC = () => {
       clearTimeout(aiFeedbackTimeoutRef.current);
     }
     
-    // Fetch feedback if session is active, even if cpm is 0 (to get "Press faster" or similar)
     aiFeedbackTimeoutRef.current = setTimeout(() => {
         fetchAiFeedback(cpm);
     }, AI_FEEDBACK_DEBOUNCE_MS);
@@ -111,8 +115,6 @@ const CPRSimulator: React.FC = () => {
     };
   }, [compressionTimestamps, isSessionActive, calculateCPM, fetchAiFeedback]);
 
-  // This function would be called by an external system (e.g., accelerometer data processing)
-  // to register a compression event.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleCompression = useCallback(() => {
     if (!isSessionActive) return;
@@ -132,7 +134,7 @@ const CPRSimulator: React.FC = () => {
         setCurrentCPM(0);
         setAiFeedback("Awaiting compressions...");
         setFeedbackType('neutral');
-        toast({ title: "Session Started", description: `Metronome at ${METRONOME_BPM} BPM.` });
+        toast({ title: "Session Started", description: `Metronome at ${metronomeBpm} BPM.` });
       } else {
         toast({ title: "Session Ended" });
         if (aiFeedbackTimeoutRef.current) {
@@ -150,6 +152,10 @@ const CPRSimulator: React.FC = () => {
       case 'warning': return <AlertCircle className="h-6 w-6 text-accent" />;
       default: return <Info className="h-6 w-6 text-primary" />;
     }
+  };
+
+  const handleBpmChange = (value: number[]) => {
+    setMetronomeBpm(value[0]);
   };
 
   return (
@@ -170,22 +176,40 @@ const CPRSimulator: React.FC = () => {
           >
             {isSessionActive ? 'Stop Session' : 'Start Session & Metronome'}
           </Button>
-          <MetronomeControls bpm={METRONOME_BPM} isPlaying={isSessionActive} onTogglePlay={toggleSession} />
+          <MetronomeControls bpm={metronomeBpm} isPlaying={isSessionActive} onTogglePlay={toggleSession} />
+        </div>
+
+        <div className="space-y-3 pt-4 border-t border-border">
+            <div className="flex justify-between items-center">
+                <Label htmlFor="bpm-slider" className="flex items-center text-muted-foreground">
+                    <Music2 className="h-5 w-5 mr-2 text-primary"/> Metronome Speed:
+                </Label>
+                <span className="font-semibold text-primary">{metronomeBpm} BPM</span>
+            </div>
+            <Slider
+                id="bpm-slider"
+                min={MIN_BPM}
+                max={MAX_BPM}
+                step={1}
+                value={[metronomeBpm]}
+                onValueChange={handleBpmChange}
+                disabled={isSessionActive}
+                className={cn(isSessionActive && "opacity-50 cursor-not-allowed")}
+            />
         </div>
         
         {isSessionActive && (
-          <div className="text-center p-4 my-8 border border-dashed border-primary/50 rounded-lg bg-primary/5">
+          <div className="text-center p-4 my-4 border border-dashed border-primary/50 rounded-lg bg-primary/5">
             <p className="text-muted-foreground">Listening for compressions...</p>
             <p className="text-xs text-muted-foreground">Automatic detection active.</p>
           </div>
         )}
         
         {!isSessionActive && (
-           <div className="text-center p-4 my-8 border border-dashed border-muted/30 rounded-lg bg-muted/10">
-            <p className="text-muted-foreground">Start a session to begin.</p>
+           <div className="text-center p-4 my-4 border border-dashed border-muted/30 rounded-lg bg-muted/10">
+            <p className="text-muted-foreground">Adjust metronome speed if needed, then start a session.</p>
           </div>
         )}
-
 
         <VisualPacer 
           currentRate={currentCPM} 
@@ -228,3 +252,5 @@ const CPRSimulator: React.FC = () => {
 };
 
 export default CPRSimulator;
+
+    
