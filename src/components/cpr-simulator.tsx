@@ -201,7 +201,7 @@ const CPRSimulator: React.FC = () => {
         {isSessionActive && (
           <div className="text-center p-4 my-4 border border-dashed border-primary/50 rounded-lg bg-primary/5">
             <p className="text-muted-foreground">Listening for compressions...</p>
-            <p className="text-xs text-muted-foreground">Automatic detection active.</p>
+            <p className="text-xs text-muted-foreground">Automatic detection (via motion sensor) pending implementation.</p>
           </div>
         )}
         
