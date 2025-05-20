@@ -17,7 +17,7 @@ const MAX_BPM = 150;
 const DEFAULT_BPM = 100;
 const CPM_CALCULATION_WINDOW_SECONDS = 10;
 const MOTION_EVENT_DEBOUNCE_MS = 250;
-const ACCELERATION_THRESHOLD = 18;
+const ACCELERATION_THRESHOLD = 18; // Lowered for potentially better sensitivity
 
 interface CPRSimulatorProps {
   onPerformanceChange: (bgClass: string) => void;
@@ -34,12 +34,15 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
   const { toast } = useToast();
 
   const defaultBackground = "bg-gradient-to-br from-background to-secondary/30";
+  const goodBackground = "bg-green-300/50 dark:bg-green-700/40";
+  const warnBackground = "bg-yellow-300/50 dark:bg-yellow-600/40";
+  const badBackground = "bg-red-400/50 dark:bg-red-800/40";
+
 
   const handleCompression = useCallback(() => {
     if (!isSessionActive) return;
     
     const now = Date.now();
-    // Keep a slightly larger window for calculation to avoid edge cases, calculation itself uses strict window.
     const retentionWindowStartTime = now - (CPM_CALCULATION_WINDOW_SECONDS + 5) * 1000; 
     
     setCompressionTimestamps(prev => [...prev.filter(ts => ts > retentionWindowStartTime), now]);
@@ -51,7 +54,7 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
     
     const recentCompressions = compressionTimestamps.filter(ts => ts > windowStartTime);
     
-    if (recentCompressions.length < 1) { // Allow 0 CPM if no compressions
+    if (recentCompressions.length < 1) {
       setCurrentCPM(0);
       return 0;
     }
@@ -65,15 +68,17 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
     if (!isSessionActive) {
       setCurrentCPM(0);
       setMotionStatus("Motion detection inactive.");
-      onPerformanceChange(defaultBackground); // Reset background when session stops
+      onPerformanceChange(defaultBackground);
       return;
     }
     
-    calculateCPM();
+    const cpmCalculationInterval = setInterval(calculateCPM, 1000); // Recalculate CPM every second
     
-  }, [compressionTimestamps, isSessionActive, calculateCPM, onPerformanceChange, defaultBackground]);
+    return () => clearInterval(cpmCalculationInterval);
+    
+  }, [isSessionActive, calculateCPM, onPerformanceChange, defaultBackground]);
 
-  // Effect for updating page background based on performance
+
   useEffect(() => {
     if (!isSessionActive || currentCPM === 0) {
       onPerformanceChange(defaultBackground);
@@ -82,21 +87,21 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
 
     const lowerIdealBound = metronomeBpm * 0.9;
     const upperIdealBound = metronomeBpm * 1.1;
-    const lowerWarnBound = metronomeBpm * 0.8;
-    const upperWarnBound = metronomeBpm * 1.2;
+    const lowerWarnBound = metronomeBpm * 0.8; // 20% deviation
+    const upperWarnBound = metronomeBpm * 1.2; // 20% deviation
 
     let bgClass = defaultBackground;
 
     if (currentCPM >= lowerIdealBound && currentCPM <= upperIdealBound) {
-      bgClass = 'bg-green-300/50 dark:bg-green-700/40'; // Good
+      bgClass = goodBackground;
     } else if ((currentCPM >= lowerWarnBound && currentCPM < lowerIdealBound) || (currentCPM > upperIdealBound && currentCPM <= upperWarnBound)) {
-      bgClass = 'bg-yellow-300/50 dark:bg-yellow-600/40'; // Warn
-    } else {
-      bgClass = 'bg-red-400/50 dark:bg-red-800/40'; // Bad
+      bgClass = warnBackground;
+    } else if (currentCPM > 0) { // Only set bad background if there are compressions
+      bgClass = badBackground;
     }
     onPerformanceChange(bgClass);
 
-  }, [currentCPM, metronomeBpm, isSessionActive, onPerformanceChange, defaultBackground]);
+  }, [currentCPM, metronomeBpm, isSessionActive, onPerformanceChange, defaultBackground, goodBackground, warnBackground, badBackground]);
 
 
   // Motion detection effect
@@ -114,6 +119,8 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
 
       const acceleration = event.accelerationIncludingGravity;
       if (acceleration && acceleration.y) {
+        // Check for significant downward motion (positive y) then upward (negative y) or vice-versa
+        // This example checks for any large y-axis acceleration spike.
         if (Math.abs(acceleration.y) > ACCELERATION_THRESHOLD) {
           handleCompression();
           lastMotionCompressionTimeRef.current = now;
@@ -132,39 +139,46 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
               setMotionStatus("Motion detection active.");
             } else {
               setMotionStatus("Permission for motion detection denied.");
-              toast({ title: "Motion Permission Denied", description: "Please enable motion sensor access in your browser settings.", variant: "destructive" });
+              setTimeout(() => {
+                toast({ title: "Motion Permission Denied", description: "Please enable motion sensor access in your browser settings for automatic compression detection.", variant: "destructive" });
+              }, 0);
             }
           })
           .catch((error: any) => {
              console.error("Error requesting motion permission:", error);
              setMotionStatus("Error requesting motion permission.");
-             toast({ title: "Motion Permission Error", description: "Could not request motion sensor access.", variant: "destructive" });
+             setTimeout(() => {
+                toast({ title: "Motion Permission Error", description: "Could not request motion sensor access. Automatic compression detection may not work.", variant: "destructive" });
+             }, 0);
           });
       } else {
+        // For browsers that do not require explicit permission (e.g., Android Chrome)
         window.addEventListener('devicemotion', handleDeviceMotion);
         setMotionStatus("Motion detection active (standard).");
       }
     } else {
       setMotionStatus("Motion detection not supported on this device/browser.");
-      toast({ title: "Motion Not Supported", description: "Your device or browser does not support motion detection.", variant: "destructive" });
+      setTimeout(() => {
+        toast({ title: "Motion Not Supported", description: "Your device or browser does not support motion detection for automatic compressions.", variant: "destructive" });
+      }, 0);
     }
 
     return () => {
       window.removeEventListener('devicemotion', handleDeviceMotion);
-      setMotionStatus("Motion detection inactive.");
+      // Don't reset motion status here if session is still considered active by parent for a brief moment
     };
-  }, [isSessionActive, handleCompression, toast]);
+  }, [isSessionActive, handleCompression, toast]); // Added toast to dependencies
 
 
   const toggleSession = () => {
     setIsSessionActive(prev => {
       const newSessionState = !prev;
       if (newSessionState) {
-        setCompressionTimestamps([]);
-        setCurrentCPM(0);
+        setCompressionTimestamps([]); // Reset compressions
+        setCurrentCPM(0); // Reset CPM
         lastMotionCompressionTimeRef.current = 0; 
-        onPerformanceChange(defaultBackground); // Set to default when session starts before any CPM
-        toast({ title: "Session Started", description: `Metronome at ${metronomeBpm} BPM.` });
+        onPerformanceChange(defaultBackground); // Set to default when session starts
+        toast({ title: "Session Started", description: `Metronome at ${metronomeBpm} BPM. Try to match the rhythm.` });
       } else {
         onPerformanceChange(defaultBackground); // Reset background when session explicitly stops
         toast({ title: "Session Ended" });
@@ -178,10 +192,10 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
   };
 
   return (
-    <Card className="w-full max-w-lg shadow-2xl rounded-xl bg-card/80 backdrop-blur-sm">
+    <Card className="w-full max-w-lg shadow-2xl rounded-xl bg-card/90 backdrop-blur-sm">
       <CardHeader className="text-center">
         <CardTitle className="text-3xl font-bold">CPR Rhythm Training</CardTitle>
-        <CardDescription>Adjust metronome speed. Match the pace. Compressions detected by phone movement.</CardDescription>
+        <CardDescription>Adjust metronome. Match pace. Compressions may be detected by phone movement.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6 p-6">
         <div className="flex flex-col items-center space-y-4">
@@ -247,7 +261,7 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
       </CardContent>
       <CardFooter className="text-center p-4">
         <p className="text-xs text-muted-foreground">
-          This is a simulator for CPR compression rate practice. Motion-based compression detection is experimental.
+          This is a simulator for CPR compression rate practice. Motion-based compression detection is experimental and may not be accurate.
           Always follow official CPR guidelines. Not for use in real emergencies.
         </p>
       </CardFooter>
@@ -256,3 +270,5 @@ const CPRSimulator: React.FC<CPRSimulatorProps> = ({ onPerformanceChange }) => {
 };
 
 export default CPRSimulator;
+
+    
